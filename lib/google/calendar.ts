@@ -78,7 +78,7 @@ export async function getFreshAccessToken(
 ): Promise<{ accessToken: string; email: string | null } | null> {
   const { data: row } = await admin
     .from("user_google_tokens")
-    .select("access_token, refresh_token, expires_at, email")
+    .select("access_token, refresh_token, expires_at, scope, email")
     .eq("user_id", userId)
     .maybeSingle();
 
