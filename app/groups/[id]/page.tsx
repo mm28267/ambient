@@ -8,6 +8,7 @@ import { findCommonFree, filterToReasonableHours, scoreWindow } from "@/lib/cale
 import GroupTiles, { type Member, type ListeningEvent } from "./group-tiles";
 import GroupChat, { type ChatMessage, type Reaction } from "./group-chat";
 import CatchupCard, { type Suggestion, type RSVP } from "./catchup-card";
+import GroupPhotos, { type GroupPhoto } from "./group-photos";
 
 // Force the page to be re-rendered on every request so router.refresh()
 // always picks up new database state.
@@ -96,6 +97,18 @@ export default async function GroupPage({
         .in("message_id", messageIdList)
     : { data: [] as const };
   const initialReactions = (reactionRows ?? []) as Reaction[];
+
+  // 5c. Recent photos for the group.
+  const { data: photoRows } = await supabase
+    .from("photo_events")
+    .select("id, user_id, group_id, storage_path, caption, mime_type, width, height, created_at")
+    .eq("group_id", id)
+    .order("created_at", { ascending: false })
+    .limit(60);
+  const initialPhotos = (photoRows ?? []) as GroupPhoto[];
+
+  // Public URL prefix for the bucket.
+  const photoUrlBase = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/group-photos`;
 
   // 6. Find or create an active catch-up suggestion for this group.
   let activeSuggestion: Suggestion | null = null;
@@ -251,6 +264,14 @@ export default async function GroupPage({
             )}
           </div>
         )}
+
+        <GroupPhotos
+          groupId={group.id}
+          members={members}
+          initialPhotos={initialPhotos}
+          currentUserId={user.id}
+          publicUrlBase={photoUrlBase}
+        />
 
         <GroupChat
           groupId={group.id}

@@ -6,6 +6,7 @@ import { getCurrentlyPlaying, getLastPlayed, type Track } from "@/lib/spotify/ap
 import { saveListeningEvent } from "@/lib/listening/save";
 import SignOutButton from "./sign-out-button";
 import AutoRefresh from "./auto-refresh";
+import DisconnectGoogleButton from "./disconnect-google-button";
 
 /**
  * Dashboard. Server Component.
@@ -61,6 +62,7 @@ export default async function Dashboard() {
     .eq("user_id", user.id)
     .maybeSingle();
   const googleEmail: string | null = googleRow?.email ?? null;
+
 
   const displayName = user.user_metadata?.full_name ?? user.email ?? "there";
   const avatarUrl = user.user_metadata?.avatar_url;
@@ -149,8 +151,8 @@ export default async function Dashboard() {
           )}
         </div>
 
-        {/* Google Calendar */}
-        <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 border border-zinc-200 dark:border-zinc-800">
+        {/* Google (Calendar + Photos) */}
+        <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 border border-zinc-200 dark:border-zinc-800 space-y-4">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-10 h-10 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl">
@@ -176,6 +178,12 @@ export default async function Dashboard() {
               </a>
             )}
           </div>
+
+          {googleEmail && (
+            <div className="pt-2">
+              <DisconnectGoogleButton />
+            </div>
+          )}
         </div>
 
         {/* Your groups */}
