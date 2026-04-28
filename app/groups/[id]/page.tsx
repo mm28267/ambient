@@ -2,8 +2,16 @@ import { redirect, notFound } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { fetchGroupFreeBusy } from "@/lib/google/calendar";
+import { findCommonFree, filterToReasonableHours, scoreWindow } from "@/lib/calendar/availability";
 import GroupTiles, { type Member, type ListeningEvent } from "./group-tiles";
 import GroupChat, { type ChatMessage, type Reaction } from "./group-chat";
+import CatchupCard, { type Suggestion, type RSVP } from "./catchup-card";
+
+// Force the page to be re-rendered on every request so router.refresh()
+// always picks up new database state.
+export const dynamic = "force-dynamic";
 
 /**
  * /groups/[id] — the group page.
@@ -89,7 +97,85 @@ export default async function GroupPage({
     : { data: [] as const };
   const initialReactions = (reactionRows ?? []) as Reaction[];
 
-  // 6. Latest invite code (for the share link).
+  // 6. Find or create an active catch-up suggestion for this group.
+  let activeSuggestion: Suggestion | null = null;
+  let activeRsvps: RSVP[] = [];
+  let connectedCount = 0;
+
+  try {
+    const admin = createAdminClient();
+
+    // a) Is there a confirmed or pending suggestion that hasn't expired?
+    const { data: existing } = await admin
+      .from("catchup_suggestions")
+      .select("id, group_id, suggested_start, suggested_end, status, google_event_id")
+      .eq("group_id", id)
+      .in("status", ["pending", "confirmed"])
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existing) {
+      activeSuggestion = existing as Suggestion;
+    } else {
+      // b) No active suggestion — compute a new one from Google free/busy.
+      const freeBusy = await fetchGroupFreeBusy(admin, memberUserIds, 14);
+      connectedCount = freeBusy.filter((u) => !u.error).length;
+
+      if (connectedCount >= 1) {
+        const now = new Date();
+        const horizon = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+        const common = findCommonFree(freeBusy, now, horizon);
+        const reasonable = filterToReasonableHours(common);
+        const ranked = reasonable
+          .map((w) => ({ w, score: scoreWindow(w) }))
+          .sort((a, b) => b.score - a.score);
+
+        // Cycle through the ranked list as the user dismisses. Count past
+        // dismissals (expired/declined) for this group within the last 14 days
+        // and use that as an index into the ranked list. After the list is
+        // exhausted we wrap around — but each dismiss reliably advances.
+        const lookback = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString();
+        const { count: dismissedCount } = await admin
+          .from("catchup_suggestions")
+          .select("id", { count: "exact", head: true })
+          .eq("group_id", id)
+          .in("status", ["expired", "declined"])
+          .gt("created_at", lookback);
+
+        const idx = ranked.length > 0 ? (dismissedCount ?? 0) % ranked.length : 0;
+        const chosen = ranked[idx];
+
+        if (chosen) {
+          const { data: created } = await admin
+            .from("catchup_suggestions")
+            .insert({
+              group_id: id,
+              suggested_start: chosen.w.start.toISOString(),
+              suggested_end: chosen.w.end.toISOString(),
+              status: "pending",
+            })
+            .select("id, group_id, suggested_start, suggested_end, status, google_event_id")
+            .single();
+          if (created) activeSuggestion = created as Suggestion;
+        }
+      }
+    }
+
+    // c) Load RSVPs for this suggestion.
+    if (activeSuggestion) {
+      const { data: rsvpRows } = await admin
+        .from("catchup_rsvps")
+        .select("suggestion_id, user_id, response")
+        .eq("suggestion_id", activeSuggestion.id);
+      activeRsvps = (rsvpRows ?? []) as RSVP[];
+    }
+  } catch (err) {
+    console.error("Failed to load/create suggestion:", err);
+  }
+
+  // 7. Latest invite code (for the share link).
   const { data: invite } = await supabase
     .from("group_invites")
     .select("invite_code")
@@ -135,6 +221,36 @@ export default async function GroupPage({
           members={members}
           initialEvents={initialEvents}
         />
+
+        {/* Catch-up suggestion */}
+        {activeSuggestion ? (
+          <CatchupCard
+            // Re-mount the card whenever the underlying suggestion changes,
+            // so React doesn't keep the previous suggestion's state.
+            key={activeSuggestion.id}
+            groupId={group.id}
+            members={members}
+            suggestion={activeSuggestion}
+            initialRsvps={activeRsvps}
+            currentUserId={user.id}
+          />
+        ) : (
+          <div className="bg-zinc-50 dark:bg-zinc-900 rounded-2xl p-6 border border-zinc-200 dark:border-zinc-800 text-center">
+            <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-2">
+              {connectedCount === 0
+                ? "Connect Google Calendar to see catch-up suggestions"
+                : "No common free time found in the next 14 days."}
+            </p>
+            {connectedCount === 0 && (
+              <Link
+                href="/dashboard"
+                className="text-sm font-medium text-green-600 dark:text-green-400 hover:underline"
+              >
+                Go to dashboard →
+              </Link>
+            )}
+          </div>
+        )}
 
         <GroupChat
           groupId={group.id}

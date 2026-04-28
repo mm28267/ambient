@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { getCurrentlyPlaying, getLastPlayed, type Track } from "@/lib/spotify/api";
 import { saveListeningEvent } from "@/lib/listening/save";
 import SignOutButton from "./sign-out-button";
@@ -50,6 +51,16 @@ export default async function Dashboard() {
     .from("groups")
     .select("id, name, emoji, cadence_days, created_at")
     .order("created_at", { ascending: false });
+
+  // Whether the user has connected Google Calendar (admin client, since RLS
+  // blocks user reads on user_google_tokens).
+  const admin = createAdminClient();
+  const { data: googleRow } = await admin
+    .from("user_google_tokens")
+    .select("email")
+    .eq("user_id", user.id)
+    .maybeSingle();
+  const googleEmail: string | null = googleRow?.email ?? null;
 
   const displayName = user.user_metadata?.full_name ?? user.email ?? "there";
   const avatarUrl = user.user_metadata?.avatar_url;
@@ -136,6 +147,35 @@ export default async function Dashboard() {
               Nothing playing right now. Hit play on Spotify and refresh this page.
             </p>
           )}
+        </div>
+
+        {/* Google Calendar */}
+        <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 border border-zinc-200 dark:border-zinc-800">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl">
+                📅
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">
+                  Google Calendar
+                </p>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
+                  {googleEmail
+                    ? `Connected as ${googleEmail}`
+                    : "Connect to enable catch-up suggestions"}
+                </p>
+              </div>
+            </div>
+            {!googleEmail && (
+              <a
+                href="/api/google/start"
+                className="text-sm font-medium px-4 py-2 rounded-full bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-900 hover:opacity-90 transition-opacity whitespace-nowrap"
+              >
+                Connect
+              </a>
+            )}
+          </div>
         </div>
 
         {/* Your groups */}
