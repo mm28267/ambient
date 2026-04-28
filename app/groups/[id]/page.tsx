@@ -9,6 +9,7 @@ import GroupTiles, { type Member, type ListeningEvent } from "./group-tiles";
 import GroupChat, { type ChatMessage, type Reaction } from "./group-chat";
 import CatchupCard, { type Suggestion, type RSVP } from "./catchup-card";
 import GroupPhotos, { type GroupPhoto } from "./group-photos";
+import GroupVibes, { type MemberVibe } from "./group-vibes";
 
 // Force the page to be re-rendered on every request so router.refresh()
 // always picks up new database state.
@@ -45,17 +46,27 @@ export default async function GroupPage({
     .eq("group_id", id)
     .order("joined_at", { ascending: true });
 
-  // 3. Fetch profiles for those member ids.
+  // 3. Fetch profiles for those member ids (including vibe fields).
   const memberUserIds = (memberRows ?? []).map((m) => m.user_id);
   const { data: profileRows } = memberUserIds.length
     ? await supabase
         .from("profiles")
-        .select("id, display_name, avatar_url")
+        .select("id, display_name, avatar_url, timezone, last_seen_at, weather_temp_f, weather_code, calendar_status_text")
         .in("id", memberUserIds)
     : { data: [] as const };
 
+  type ProfileRow = {
+    id: string;
+    display_name: string | null;
+    avatar_url: string | null;
+    timezone: string | null;
+    last_seen_at: string | null;
+    weather_temp_f: number | null;
+    weather_code: number | null;
+    calendar_status_text: string | null;
+  };
   const profileById = new Map(
-    (profileRows ?? []).map((p) => [p.id, p as { id: string; display_name: string | null; avatar_url: string | null }])
+    (profileRows ?? []).map((p) => [p.id, p as ProfileRow])
   );
 
   const members: Member[] = (memberRows ?? []).map((m) => {
@@ -64,6 +75,18 @@ export default async function GroupPage({
       user_id: m.user_id,
       display_name: p?.display_name ?? null,
       avatar_url: p?.avatar_url ?? null,
+    };
+  });
+
+  const vibes: MemberVibe[] = (memberRows ?? []).map((m) => {
+    const p = profileById.get(m.user_id);
+    return {
+      user_id: m.user_id,
+      timezone: p?.timezone ?? null,
+      last_seen_at: p?.last_seen_at ?? null,
+      weather_temp_f: p?.weather_temp_f ?? null,
+      weather_code: p?.weather_code ?? null,
+      calendar_status_text: p?.calendar_status_text ?? null,
     };
   });
 
@@ -228,6 +251,8 @@ export default async function GroupPage({
             </p>
           </div>
         </div>
+
+        <GroupVibes members={members} vibes={vibes} />
 
         <GroupTiles
           groupId={group.id}

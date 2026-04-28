@@ -1,12 +1,17 @@
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getCurrentlyPlaying, getLastPlayed, type Track } from "@/lib/spotify/api";
 import { saveListeningEvent } from "@/lib/listening/save";
+import { fetchCurrentWeather } from "@/lib/weather/openmeteo";
+import { fetchGroupFreeBusy } from "@/lib/google/calendar";
+import { computeCalendarStatus } from "@/lib/calendar/status";
 import SignOutButton from "./sign-out-button";
 import AutoRefresh from "./auto-refresh";
 import DisconnectGoogleButton from "./disconnect-google-button";
+import PresencePinger from "./presence-pinger";
 
 /**
  * Dashboard. Server Component.
@@ -20,6 +25,44 @@ export default async function Dashboard() {
 
   if (!user) {
     redirect("/");
+  }
+
+  // Best-effort: refresh weather if stale (>30 min). Use Vercel's geo headers
+  // when available (production), fall back to the user's stored lat/lng
+  // (good for local dev — set them manually in Supabase the first time).
+  try {
+    const headerStore = await headers();
+    const headerLat = parseFloat(headerStore.get("x-vercel-ip-latitude") ?? "");
+    const headerLng = parseFloat(headerStore.get("x-vercel-ip-longitude") ?? "");
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("latitude, longitude, weather_updated_at")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    const lat = Number.isFinite(headerLat) ? headerLat : profile?.latitude ?? null;
+    const lng = Number.isFinite(headerLng) ? headerLng : profile?.longitude ?? null;
+
+    const stale =
+      !profile?.weather_updated_at ||
+      Date.now() - new Date(profile.weather_updated_at).getTime() > 30 * 60 * 1000;
+
+    if (lat != null && lng != null && stale) {
+      const weather = await fetchCurrentWeather(lat, lng);
+      await supabase
+        .from("profiles")
+        .update({
+          latitude: lat,
+          longitude: lng,
+          weather_temp_f: weather.temperatureF,
+          weather_code: weather.weatherCode,
+          weather_updated_at: new Date().toISOString(),
+        })
+        .eq("id", user.id);
+    }
+  } catch (err) {
+    console.warn("Weather refresh skipped:", err);
   }
 
   // Spotify token + currently-playing
@@ -63,6 +106,37 @@ export default async function Dashboard() {
     .maybeSingle();
   const googleEmail: string | null = googleRow?.email ?? null;
 
+  // Best-effort: refresh the user's calendar status if stale (>5 min).
+  if (googleEmail) {
+    try {
+      const { data: profileForCal } = await supabase
+        .from("profiles")
+        .select("calendar_updated_at")
+        .eq("id", user.id)
+        .maybeSingle();
+      const calStale =
+        !profileForCal?.calendar_updated_at ||
+        Date.now() - new Date(profileForCal.calendar_updated_at).getTime() > 5 * 60 * 1000;
+
+      if (calStale) {
+        const result = await fetchGroupFreeBusy(admin, [user.id], 1); // next 24h
+        const me = result[0];
+        if (me && !me.error) {
+          const status = computeCalendarStatus(me.busy, new Date());
+          await supabase
+            .from("profiles")
+            .update({
+              calendar_status_text: status,
+              calendar_updated_at: new Date().toISOString(),
+            })
+            .eq("id", user.id);
+        }
+      }
+    } catch (err) {
+      console.warn("Calendar status refresh skipped:", err);
+    }
+  }
+
 
   const displayName = user.user_metadata?.full_name ?? user.email ?? "there";
   const avatarUrl = user.user_metadata?.avatar_url;
@@ -72,6 +146,7 @@ export default async function Dashboard() {
       {/* Re-renders this Server Component every 30s so we re-fetch Spotify
           and re-save the listening event. Renders nothing visible. */}
       <AutoRefresh intervalMs={30_000} />
+      <PresencePinger />
       <div className="max-w-3xl mx-auto space-y-8">
         <header className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
