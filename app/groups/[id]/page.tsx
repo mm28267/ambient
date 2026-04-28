@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import GroupTiles, { type Member, type ListeningEvent } from "./group-tiles";
+import GroupChat, { type ChatMessage, type Reaction } from "./group-chat";
 
 /**
  * /groups/[id] — the group page.
@@ -69,7 +70,26 @@ export default async function GroupPage({
 
   const initialEvents = (events ?? []) as ListeningEvent[];
 
-  // 5. Latest invite code (for the share link).
+  // 5. Recent chat messages for the group (oldest first for chronological display).
+  const { data: messageRows } = await supabase
+    .from("messages")
+    .select("id, group_id, user_id, body, created_at")
+    .eq("group_id", id)
+    .order("created_at", { ascending: true })
+    .limit(100);
+  const initialMessages = (messageRows ?? []) as ChatMessage[];
+
+  // 5b. Reactions for those messages.
+  const messageIdList = initialMessages.map((m) => m.id);
+  const { data: reactionRows } = messageIdList.length
+    ? await supabase
+        .from("reactions")
+        .select("id, message_id, user_id, emoji, created_at")
+        .in("message_id", messageIdList)
+    : { data: [] as const };
+  const initialReactions = (reactionRows ?? []) as Reaction[];
+
+  // 6. Latest invite code (for the share link).
   const { data: invite } = await supabase
     .from("group_invites")
     .select("invite_code")
@@ -114,6 +134,14 @@ export default async function GroupPage({
           groupId={group.id}
           members={members}
           initialEvents={initialEvents}
+        />
+
+        <GroupChat
+          groupId={group.id}
+          members={members}
+          initialMessages={initialMessages}
+          initialReactions={initialReactions}
+          currentUserId={user.id}
         />
 
         {inviteUrl && (
